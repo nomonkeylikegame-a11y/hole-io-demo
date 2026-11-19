@@ -1,20 +1,20 @@
-export const BOARD_HALF = 25;
+export const BOARD_HALF = 32;
 export const CAMERA_YAW = Math.PI * 0.171;
 const STACK_STEP = 0.33;
 const GRAVITY = 15.5;
 const MOUTH_REACH = 0.92;
-export const TIER_MASS = [0, 25, 180, 520, 1150];
+const TIER_MASS = [0, 25, 260, 940, 2350];
 export const TIER_RADIUS = [0.68, 0.99, 1.36, 1.82, 2.46];
 
 export const PROPS = [
-    { name: 'block', count: 5000, footprint: 0.20, mass: 1 },
+    { name: 'block', count: 14948, footprint: 0.20, mass: 1 },
     { name: 'crate', count: 20, footprint: 0.43, mass: 2 },
     { name: 'bench', count: 14, footprint: 0.71, mass: 4 },
     { name: 'cart', count: 10, footprint: 1.02, mass: 7 },
     { name: 'house', count: 8, footprint: 1.53, mass: 12 },
 ] as const;
 
-export type StackPattern = 'round' | 'pyramid' | 'square';
+export type StackPattern = 'round' | 'pyramid' | 'square' | 'ring' | 'cross' | 'steps';
 
 interface Placement {
     tier: number;
@@ -54,16 +54,43 @@ interface RoundStep {
 
 const START_STATE: RoundState = { x: 0, z: 0, radius: TIER_RADIUS[0], mass: 0, tier: 0, eaten: 0, finished: false };
 
-const STACK_RECIPES: { pattern: StackPattern; levels: number }[] = [
-    { pattern: 'round', levels: 6 },
-    { pattern: 'square', levels: 6 },
-    { pattern: 'pyramid', levels: 6 },
-    { pattern: 'square', levels: 10 },
-    { pattern: 'round', levels: 7 },
-    { pattern: 'round', levels: 7 },
-    { pattern: 'square', levels: 4 },
-    { pattern: 'pyramid', levels: 6 },
+interface TowerShape {
+    pattern: StackPattern;
+    levels: number;
+}
+
+interface Tower extends TowerShape {
+    x: number;
+    z: number;
+}
+
+const STARTERS: readonly Tower[] = [
+    { x: -1.12, z: -1.77, pattern: 'round', levels: 6 },
+    { x: 3.4, z: -3.9, pattern: 'square', levels: 18 },
+    { x: -4.6, z: 2.8, pattern: 'steps', levels: 17 },
+    { x: 4.7, z: 3.3, pattern: 'ring', levels: 16 },
+    { x: -4.1, z: -4.7, pattern: 'cross', levels: 11 },
+    { x: 0.9, z: 6.2, pattern: 'round', levels: 15 },
+    { x: -6.8, z: -1.2, pattern: 'pyramid', levels: 6 },
 ];
+
+const STACK_RECIPES: readonly (TowerShape & { count: number })[] = [
+    { pattern: 'round', levels: 6, count: 18 },
+    { pattern: 'round', levels: 15, count: 12 },
+    { pattern: 'square', levels: 10, count: 15 },
+    { pattern: 'square', levels: 18, count: 14 },
+    { pattern: 'pyramid', levels: 6, count: 14 },
+    { pattern: 'pyramid', levels: 8, count: 13 },
+    { pattern: 'ring', levels: 7, count: 10 },
+    { pattern: 'ring', levels: 12, count: 1 },
+    { pattern: 'ring', levels: 16, count: 8 },
+    { pattern: 'cross', levels: 11, count: 12 },
+    { pattern: 'steps', levels: 17, count: 10 },
+];
+
+const STACK_FOOTPRINT: Record<StackPattern, number> = {
+    round: 0.70, square: 0.70, pyramid: 1.04, ring: 1.00, cross: 0.85, steps: 0.90,
+};
 
 export function tierFor(mass: number): number {
     let tier = 0;
@@ -76,8 +103,8 @@ export function tierFor(mass: number): number {
 export function makeDistrict(): Placement[] {
     const result: Placement[] = [];
     const homes = [
-        [-17, -16], [-10, -18], [12, -17], [18, -10],
-        [-18, 10], [-9, 17], [10, 15], [18, 17],
+        [-22, -21], [-11, -23], [15, -22], [23, -12],
+        [-22, 13], [-11, 23], [12, 19], [23, 22],
     ];
     for (const [index, [x, z]] of homes.entries()) {
         result.push({ tier: 4, x, z, angle: index % 2 ? 0 : 90 });
@@ -88,21 +115,7 @@ export function makeDistrict(): Placement[] {
         seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
         return seed / 4294967296;
     };
-    const sites = [];
-    for (let row = -5; row <= 5; row++) {
-        for (let col = -5; col <= 5; col++) {
-            const x = col * 4.22 + (random() - 0.5) * 0.72;
-            const z = row * 4.22 + (random() - 0.5) * 0.72;
-            if (Math.hypot(x + 1.12, z + 1.77) < 2.9 || Math.hypot(x, z) < 3) continue;
-            if (homes.some(([hx, hz]) => Math.hypot(hx - x, hz - z) < 2.9)) continue;
-            sites.push({ x, z, order: random() });
-        }
-    }
-    sites.sort((a, b) => a.order - b.order);
-    const stacks = [{ x: -1.12, z: -1.77 }, ...sites.slice(0, 79)].map((site, index) => ({
-        ...site,
-        ...STACK_RECIPES[index % STACK_RECIPES.length],
-    }));
+    const stacks = towerLayout(homes, random);
     const span = BOARD_HALF - 1.6;
     for (let tier = 3; tier > 0; tier--) {
         const prop = PROPS[tier];
@@ -114,7 +127,7 @@ export function makeDistrict(): Placement[] {
             if (distance < [0, 4.5, 6.6, 8.9][tier]) continue;
             if (tier >= 2 && (Math.abs(x) < 2.15 || Math.abs(z) < 2.15)) continue;
             if (stacks.some(stack => Math.hypot(x - stack.x, z - stack.z) <
-                prop.footprint + (stack.pattern === 'pyramid' ? 1.32 : 1.02))) continue;
+                prop.footprint + STACK_FOOTPRINT[stack.pattern] + 0.30)) continue;
             const overlaps = result.some(other =>
                 Math.hypot(x - other.x, z - other.z) < prop.footprint + PROPS[other.tier].footprint + 0.62,
             );
@@ -129,7 +142,32 @@ export function makeDistrict(): Placement[] {
     return [...blocks, ...result];
 }
 
-function makeStacks(stacks: ReadonlyArray<{ pattern: StackPattern; x: number; z: number; levels: number }>): Placement[] {
+function towerLayout(homes: readonly number[][], random: () => number): Tower[] {
+    const sites = [];
+    for (let row = -7; row <= 7; row++) {
+        for (let col = -7; col <= 7; col++) {
+            const x = col * 4.05 + (random() - 0.5) * 0.64;
+            const z = row * 4.05 + (random() - 0.5) * 0.64;
+            if (Math.hypot(x, z) < 3 || STARTERS.some(tower => Math.hypot(x - tower.x, z - tower.z) < 3.0)) continue;
+            if (homes.some(([hx, hz]) => Math.hypot(hx - x, hz - z) < 2.8)) continue;
+            sites.push({ x, z, order: random() });
+        }
+    }
+    sites.sort((a, b) => a.order - b.order);
+
+    const towers = [...STARTERS];
+    for (const { pattern, levels, count } of STACK_RECIPES) {
+        const reserved = STARTERS.filter(tower => tower.pattern === pattern && tower.levels === levels).length;
+        for (let i = reserved; i < count; i++) {
+            const site = sites[towers.length - STARTERS.length];
+            if (!site) throw new Error('Không đủ chỗ đặt tháp.');
+            towers.push({ x: site.x, z: site.z, pattern, levels });
+        }
+    }
+    return towers;
+}
+
+function makeStacks(stacks: readonly Tower[]): Placement[] {
     const blocks: Placement[] = [];
     let column = 0;
     for (const { pattern, x, z, levels } of stacks) {
@@ -140,19 +178,25 @@ function makeStacks(stacks: ReadonlyArray<{ pattern: StackPattern; x: number; z:
             column++;
         };
 
-        if (pattern === 'round') {
-            addColumn(0, 0, 0, levels);
-            for (let i = 0; i < 8; i++) {
-                const turn = i * Math.PI / 4;
-                addColumn(Math.cos(turn) * 0.43, Math.sin(turn) * 0.43, -i * 45, levels);
+        if (pattern === 'round' || pattern === 'ring') {
+            const columns = pattern === 'round' ? 8 : 16;
+            const radius = pattern === 'round' ? 0.43 : 0.82;
+            if (pattern === 'round') addColumn(0, 0, 0, levels);
+            for (let i = 0; i < columns; i++) {
+                const turn = i * 2 * Math.PI / columns;
+                addColumn(Math.cos(turn) * radius, Math.sin(turn) * radius, -i * 360 / columns, levels);
             }
             continue;
         }
 
-        const half = pattern === 'pyramid' ? 2 : 1;
-        for (let row = -half; row <= half; row++) {
-            for (let col = -half; col <= half; col++) {
-                const inset = pattern === 'pyramid' ? 2 * Math.max(Math.abs(row), Math.abs(col)) : 0;
+        const halfX = pattern === 'square' ? 1 : 2;
+        const halfZ = pattern === 'steps' ? 1 : halfX;
+        for (let row = -halfZ; row <= halfZ; row++) {
+            for (let col = -halfX; col <= halfX; col++) {
+                if (pattern === 'cross' && row !== 0 && col !== 0) continue;
+                let inset = 0;
+                if (pattern === 'pyramid') inset = 2 * Math.max(Math.abs(row), Math.abs(col));
+                if (pattern === 'steps') inset = 3 * (col + halfX);
                 addColumn(col * 0.30, row * 0.30, 0, levels - inset);
             }
         }
