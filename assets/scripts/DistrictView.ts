@@ -21,11 +21,26 @@ interface PropView {
     shadow?: Node;
 }
 
+interface Spark {
+    node: Node;
+    time: number;
+    life: number;
+    size: number;
+    x: number;
+    z: number;
+    dx: number;
+    dz: number;
+    lift: number;
+}
+
 const COL = {
     ink: '#172937', panel: '#223846', cream: '#fff6dc', muted: '#c0d1c4',
     mint: '#a6e0ab',
 };
 const tint = (value: string): Color => Color.fromHEX(new Color(), value);
+const HOLE_SIDES = 64;
+const HOLE_OPENING = 0.95;
+const GROUND_RAYS = HOLE_SIDES + 4;
 
 export class DistrictView {
     private readonly world: Node;
@@ -50,6 +65,27 @@ export class DistrictView {
     private readonly ripple: Node;
     private readonly marker: Node;
     private readonly disk: Mesh;
+    private readonly wave: Node;
+    private readonly waveMaterial: Material;
+    private readonly waveColor = new Color();
+    private readonly sparks: Spark[] = [];
+    private sparkCursor = 0;
+    private lastBurst = -1;
+    private growAt = -1;
+    private impactAt = -1;
+    private waveAt = -1;
+    private waveRadius = 0;
+    private waveAlpha = 0;
+    private readonly groundAngles = new Float64Array(GROUND_RAYS);
+    private readonly groundGeometry: primitives.IDynamicGeometry = {
+        positions: new Float32Array(GROUND_RAYS * 6),
+        uvs: new Float32Array(GROUND_RAYS * 4),
+        indices16: new Uint16Array(this.ringIndices(GROUND_RAYS)),
+        minPos: { x: -BOARD_HALF, y: 0, z: -BOARD_HALF },
+        maxPos: { x: BOARD_HALF, y: 0, z: BOARD_HALF },
+    };
+    private readonly groundPose = new Vec3(Infinity, Infinity, Infinity);
+    private ground?: Mesh;
     private softShadow!: Material;
     private propMaterial!: Material;
     private stackMaterials!: Record<StackPattern, Material>;
@@ -68,21 +104,47 @@ export class DistrictView {
 
         this.disk = this.mesh(this.ring(0, 1));
         this.hole = this.child(this.world, 'Hố');
-        this.addMesh(this.hole, 'Viền ngoài', this.disk, this.material('#e2b86f'), 0, 0.042, 0);
-        this.addMesh(this.hole, 'Vực sâu', this.disk, this.material('#11192f'), 0, 0.05, 0).setScale(0.945, 1, 0.945);
-        this.addMesh(this.hole, 'Lòng hố', this.mesh(this.ring(0.74, 0.93)),
-            this.material('#293756'), 0, 0.06, 0);
-        this.ripple = this.addMesh(this.hole, 'Gợn sáng', this.mesh(this.ring(0.9, 0.925)),
-            this.material('#91b4ad65'), 0, 0.07, 0);
+        this.addMesh(this.hole, 'Viền ngoài', this.mesh(this.ring(0.91, 1.015)),
+            this.material('#e2b86f'), 0, 0.022, 0);
+        const walls = [
+            { radius: 0.95, depth: -0.004, color: '#526590' },
+            { radius: 0.91, depth: -0.33, color: '#3b4b78' },
+            { radius: 0.81, depth: -0.73, color: '#293657' },
+            { radius: 0.63, depth: -1.15, color: '#1d2948' },
+            { radius: 0.42, depth: -1.56, color: '#131c32' },
+            { radius: 0.27, depth: -1.90, color: '#0d1427' },
+        ];
+        for (let i = 1; i < walls.length; i++) {
+            const upper = walls[i - 1];
+            const lower = walls[i];
+            this.addMesh(this.hole, 'Thành hố', this.mesh(this.ring(lower.radius, upper.radius, lower.depth, upper.depth)),
+                this.material(upper.color), 0, 0, 0);
+        }
+        const bottom = walls[walls.length - 1];
+        this.addMesh(this.hole, 'Đáy hố', this.disk, this.material(bottom.color), 0, bottom.depth, 0)
+            .setScale(bottom.radius, 1, bottom.radius);
+        this.ripple = this.addMesh(this.hole, 'Gợn sáng', this.mesh(this.ring(0.972, 0.991)),
+            this.material('#d3efe393'), 0, 0.026, 0);
         this.marker = this.child(this.hole, 'Dấu sáng');
         const dot = this.material('#a5deaf');
         for (let index = 0; index < 4; index++) {
             const turn = index * Math.PI / 2;
-            this.addMesh(this.marker, 'Chấm', this.disk, dot, Math.cos(turn) * 0.967, 0.076, Math.sin(turn) * 0.967)
-                .setScale(0.041, 1, 0.041);
+            this.addMesh(this.marker, 'Chấm', this.disk, dot, Math.cos(turn) * 0.966, 0.031, Math.sin(turn) * 0.966)
+                .setScale(0.029, 1, 0.029);
+        }
+        this.waveMaterial = this.material('#b0ebd467');
+        this.wave = this.addMesh(this.world, 'Sóng trên mặt đường', this.mesh(this.ring(0.974, 1)),
+            this.waveMaterial, 0, 0.036, 0);
+        this.wave.active = false;
+        const chip = this.mesh(primitives.box());
+        const sparkMaterials = [this.material('#a9eccd', undefined, true), this.material('#ffd285', undefined, true)];
+        for (let i = 0; i < 30; i++) {
+            const node = this.addMesh(this.world, 'Tia sáng', chip, sparkMaterials[i % 2], 0, 0, 0);
+            node.active = false;
+            this.sparks.push({ node, time: 0, life: 0, size: 0, x: 0, z: 0, dx: 0, dz: 0, lift: 0 });
         }
         this.pose(0, 0, TIER_RADIUS[0], 0, 0);
-        this.follow(0, 0, TIER_RADIUS[0], 1);
+        this.follow(0, 0, TIER_RADIUS[0], 1, 0);
 
         this.canvas = this.child(parent, 'Giao diện', true);
         this.canvas.addComponent(UITransform).setContentSize(1280, 720);
@@ -115,17 +177,24 @@ export class DistrictView {
 
     build(art: Art): void {
         const box = this.mesh(primitives.box());
-        const base = this.addMesh(this.world, 'Đế khu phố', box, this.material('#b3795a'), 0, -0.56, 0);
-        base.setScale(BOARD_HALF * 2 + 0.42, 0.58, BOARD_HALF * 2 + 0.42);
-        const band = this.addMesh(this.world, 'Viền khu phố', box, this.material('#efd09e'), 0, -0.22, 0);
-        band.setScale(BOARD_HALF * 2 + 0.55, 0.39, BOARD_HALF * 2 + 0.55);
-        const half = BOARD_HALF;
-        const ground = this.mesh({
-            positions: [-half, 0, -half, -half, 0, half, half, 0, half, half, 0, -half],
-            uvs: [0, 0, 0, 1, 1, 1, 1, 0],
-            indices: [0, 1, 2, 0, 2, 3],
+        const base = this.material('#b3795a');
+        const trim = this.material('#efd09e');
+        for (let side = 0; side < 4; side++) {
+            const angle = side * Math.PI / 2;
+            const edge = BOARD_HALF + 0.1;
+            const x = Math.cos(angle) * edge;
+            const z = Math.sin(angle) * edge;
+            this.addMesh(this.world, 'Thành khu phố', box, base, x, -0.55, z)
+                .setScale(side % 2 ? BOARD_HALF * 2 + 0.42 : 0.2, 0.57, side % 2 ? 0.2 : BOARD_HALF * 2 + 0.42);
+            this.addMesh(this.world, 'Viền khu phố', box, trim, x, -0.14, z)
+                .setScale(side % 2 ? BOARD_HALF * 2 + 0.44 : 0.22, 0.26, side % 2 ? 0.22 : BOARD_HALF * 2 + 0.44);
+        }
+        this.writeGround(0, 0, TIER_RADIUS[0]);
+        this.ground = utils.MeshUtils.createDynamicMesh(0, this.groundGeometry, undefined, {
+            maxSubMeshes: 1, maxSubMeshVertices: GROUND_RAYS * 2, maxSubMeshIndices: GROUND_RAYS * 6,
         });
-        this.addMesh(this.world, 'Mặt đường', ground, this.material('#ffffff', art.paving), 0, 0, 0);
+        this.meshes.push(this.ground);
+        this.addMesh(this.world, 'Mặt đường', this.ground, this.material('#ffffff', art.paving), 0, 0, 0);
         this.softShadow = this.material('#4b493c41');
         this.propMaterial = this.material('#ffffff', art.atlas);
         this.stackMaterials = {
@@ -136,24 +205,29 @@ export class DistrictView {
         for (const prop of PROPS) this.models.push(this.mesh(art.props[prop.name]));
     }
 
-    resetProps(props: readonly Readonly<PropState>[]): void {
+    resetProps(props: Iterable<Readonly<PropState>>): void {
         for (const prop of this.props.keys()) this.removeProp(prop);
         for (const prop of props) this.props.set(prop, this.createProp(prop));
     }
 
     renderProp(prop: Readonly<PropState>, holeX: number, holeZ: number): void {
         const { model, shadow } = this.props.get(prop)!;
-        const { x, z, height, swallow, angle } = prop;
-        if (swallow < 0) {
+        const { x, z, height, entry, angle } = prop;
+        if (!entry) {
             model.setPosition(x, height, z);
+            const lean = Math.min(7, prop.fallSpeed * 2.1);
+            const column = prop.stack!.column;
+            model.setRotationFromEuler(column % 2 ? lean : -lean, angle, column % 3 ? lean : -lean);
             return;
         }
 
         if (shadow) shadow.active = false;
-        const scale = Math.max(0.025, 1 - swallow * swallow);
+        const depth = Math.min(1, -height / entry.depth);
+        const inward = 1 - depth * 0.77;
+        const scale = 1 - 0.86 * Math.max(0, (depth - 0.32) / 0.68) ** 1.6;
         model.setScale(scale, scale, scale);
-        model.setRotationFromEuler(swallow * 55, angle + swallow * 108, -swallow * 13);
-        model.setPosition(x + (holeX - x) * swallow, -0.76 * swallow * swallow, z + (holeZ - z) * swallow);
+        model.setRotationFromEuler(depth * 57, angle + depth * 68, depth * 21 * (entry.x < 0 ? -1 : 1));
+        model.setPosition(holeX + entry.x * inward, height, holeZ + entry.z * inward);
     }
 
     removeProp(prop: Readonly<PropState>): void {
@@ -176,25 +250,117 @@ export class DistrictView {
         return { model, shadow };
     }
 
-    pose(x: number, z: number, radius: number, time: number, pulse: number): void {
-        this.hole.setPosition(x, 0, z);
-        this.hole.setScale(radius * (1 + pulse * 0.07), 1, radius * (1 + pulse * 0.07));
-        const ripple = 0.84 + 0.12 * (0.5 + 0.5 * Math.sin(time * 3));
-        this.ripple.setScale(ripple, 1, ripple);
-        this.marker.setRotationFromEuler(0, time * 25, 0);
+    resetFeedback(): void {
+        this.sparkCursor = 0;
+        this.lastBurst = this.growAt = this.impactAt = -1;
+        for (const spark of this.sparks) spark.node.active = false;
+        this.startWave(0, 0, TIER_RADIUS[0], 0, false);
     }
 
-    follow(x: number, z: number, radius: number, blend: number): void {
+    swallowEffect(x: number, z: number, radius: number, time: number, count: number, heavy: boolean): void {
+        if (heavy) this.impactAt = time;
+        if (time - this.lastBurst < 0.09) return;
+        this.lastBurst = time;
+        this.burst(x, z, radius, time, Math.min(8, 3 + Math.floor(Math.sqrt(count))), heavy ? 1.4 : 0.85);
+    }
+
+    growEffect(x: number, z: number, radius: number, time: number): void {
+        this.growAt = this.impactAt = time;
+        this.startWave(x, z, radius, time, true);
+        this.burst(x, z, radius, time, 20, 1.7);
+    }
+
+    private burst(x: number, z: number, radius: number, time: number, count: number, strength: number): void {
+        for (let i = 0; i < count; i++) {
+            const index = this.sparkCursor++;
+            const spark = this.sparks[index % this.sparks.length];
+            const angle = index * 2.399963;
+            const dx = Math.cos(angle);
+            const dz = Math.sin(angle);
+            spark.time = time;
+            spark.life = 0.25 + (i % 5) * 0.04;
+            spark.size = (0.045 + (i % 3) * 0.018) * strength;
+            spark.x = x + dx * radius * 0.89;
+            spark.z = z + dz * radius * 0.89;
+            const speed = (0.75 + (i % 4) * 0.28) * strength;
+            spark.dx = dx * speed;
+            spark.dz = dz * speed;
+            spark.lift = (0.85 + (i % 4) * 0.3) * strength;
+            spark.node.active = true;
+        }
+    }
+
+    private startWave(x: number, z: number, radius: number, time: number, growth: boolean): void {
+        this.wave.setPosition(x, 0.036, z);
+        this.wave.active = true;
+        this.waveRadius = radius;
+        this.waveAt = time;
+        this.waveAlpha = growth ? 208 : 144;
+        if (growth) this.waveColor.set(255, 204, 126, this.waveAlpha);
+        else this.waveColor.set(176, 235, 212, this.waveAlpha);
+    }
+
+    private updateFeedback(time: number): void {
+        if (this.wave.active) {
+            const progress = (time - this.waveAt) / 0.72;
+            if (progress >= 1) this.wave.active = false;
+            else {
+                const remaining = 1 - progress;
+                const width = this.waveRadius * (2.95 - 1.98 * remaining * remaining);
+                this.wave.setScale(width, 1, width);
+                this.waveColor.a = Math.round(this.waveAlpha * remaining * remaining);
+                this.waveMaterial.setProperty('mainColor', this.waveColor);
+            }
+        }
+        for (const spark of this.sparks) {
+            if (!spark.node.active) continue;
+            const age = time - spark.time;
+            const remaining = 1 - age / spark.life;
+            if (remaining <= 0) {
+                spark.node.active = false;
+                continue;
+            }
+            spark.node.setPosition(spark.x + spark.dx * age, 0.045 + spark.lift * age * remaining, spark.z + spark.dz * age);
+            const size = spark.size * remaining;
+            spark.node.setScale(size, size, size);
+            spark.node.setRotationFromEuler(age * 330, spark.x * 45, age * 480);
+        }
+    }
+
+    pose(x: number, z: number, radius: number, time: number, pulse: number): void {
+        this.hole.setPosition(x, 0, z);
+        this.hole.setScale(radius, radius, radius);
+        if (this.ground && !this.groundPose.equals3f(x, z, radius)) {
+            this.writeGround(x, z, radius);
+            this.ground.updateSubMesh(0, this.groundGeometry);
+        }
+        const ripple = 1 + pulse * 0.02;
+        this.ripple.setScale(ripple, 1, ripple);
+        this.marker.setRotationFromEuler(0, time * 25, 0);
+        this.updateFeedback(time);
+    }
+
+    follow(x: number, z: number, radius: number, blend: number, time: number): void {
         const size = view.getVisibleSize();
         const portrait = size.width / size.height < 1.1;
-        const followAmount = portrait ? 0.83 : 0.43;
+        const followAmount = portrait ? 0.96 : 0.78;
         const targetX = x * followAmount;
         const targetZ = z * followAmount;
         this.focus.x += (targetX - this.focus.x) * blend;
         this.focus.z += (targetZ - this.focus.z) * blend;
-        const targetZoom = (portrait ? 12.2 : 11.2) + radius * 1.85;
+        const intro = Math.max(0, 1 - time / 0.94) ** 3;
+        const growth = (time - this.growAt) / 0.68;
+        const recoil = growth < 1 ? Math.sin(growth * Math.PI) * (1 - growth) * 1.1 : 0;
+        const targetZoom = (portrait ? 8.25 : 7.2) + radius * 2.15 + intro * 2.6 + recoil;
         this.camera.orthoHeight += (targetZoom - this.camera.orthoHeight) * blend;
-        this.camera.node.setPosition(this.focus.x + Math.sin(CAMERA_YAW) * 24, 36, this.focus.z + Math.cos(CAMERA_YAW) * 24);
+        const impact = time - this.impactAt;
+        const shake = Math.max(0, 1 - impact / 0.28) ** 2;
+        const distance = 24 + 2.4 * intro;
+        this.camera.node.setPosition(
+            this.focus.x + Math.sin(CAMERA_YAW) * distance + Math.sin(impact * 69) * shake * 0.15,
+            36 + 3.6 * intro,
+            this.focus.z + Math.cos(CAMERA_YAW) * distance + Math.cos(impact * 79) * shake * 0.12,
+        );
         this.camera.node.lookAt(this.focus);
     }
 
@@ -302,19 +468,62 @@ export class DistrictView {
         return node;
     }
 
-    private ring(inner: number, outer: number): Geometry {
+    private writeGround(x: number, z: number, radius: number): void {
+        // Project the hole perimeter onto the square board. The four corner rays keep the outer edges exact.
+        const turn = Math.PI * 2;
+        const half = BOARD_HALF;
+        const angles = this.groundAngles;
+        for (let i = 0; i < HOLE_SIDES; i++) angles[i] = i * turn / HOLE_SIDES;
+        let corner = HOLE_SIDES;
+        for (const cornerX of [-half, half]) {
+            for (const cornerZ of [-half, half]) {
+                const angle = Math.atan2(cornerZ - z, cornerX - x);
+                angles[corner++] = angle < 0 ? angle + turn : angle;
+            }
+        }
+        angles.sort();
+        const { positions, uvs } = this.groundGeometry;
+        const opening = radius * HOLE_OPENING;
+        for (let i = 0; i < angles.length; i++) {
+            const dx = Math.cos(angles[i]);
+            const dz = Math.sin(angles[i]);
+            const edgeX = ((dx >= 0 ? half : -half) - x) / dx;
+            const edgeZ = ((dz >= 0 ? half : -half) - z) / dz;
+            const edge = Math.min(edgeX, edgeZ);
+            const innerX = x + dx * opening;
+            const innerZ = z + dz * opening;
+            const outerX = x + dx * edge;
+            const outerZ = z + dz * edge;
+            positions[i * 6] = innerX;
+            positions[i * 6 + 2] = innerZ;
+            positions[i * 6 + 3] = outerX;
+            positions[i * 6 + 5] = outerZ;
+            uvs![i * 4] = (innerX + half) / (half * 2);
+            uvs![i * 4 + 1] = (innerZ + half) / (half * 2);
+            uvs![i * 4 + 2] = (outerX + half) / (half * 2);
+            uvs![i * 4 + 3] = (outerZ + half) / (half * 2);
+        }
+        this.groundPose.set(x, z, radius);
+    }
+
+    private ring(inner: number, outer: number, innerY = 0, outerY = 0): Geometry {
         const positions: number[] = [];
-        const indices: number[] = [];
-        const sides = 64;
-        for (let i = 0; i < sides; i++) {
-            const angle = (i / sides) * Math.PI * 2;
+        for (let i = 0; i < HOLE_SIDES; i++) {
+            const angle = (i / HOLE_SIDES) * Math.PI * 2;
             const x = Math.cos(angle);
             const z = Math.sin(angle);
-            positions.push(x * inner, 0, z * inner, x * outer, 0, z * outer);
+            positions.push(x * inner, innerY, z * inner, x * outer, outerY, z * outer);
+        }
+        return { positions, indices: this.ringIndices(HOLE_SIDES) };
+    }
+
+    private ringIndices(sides: number): number[] {
+        const indices: number[] = [];
+        for (let i = 0; i < sides; i++) {
             const next = ((i + 1) % sides) * 2;
             indices.push(i * 2, next, i * 2 + 1, i * 2 + 1, next, next + 1);
         }
-        return { positions, indices };
+        return indices;
     }
 
     private label(parent: Node, text: string, size: number, color: string, bold = false, center = false): Label {

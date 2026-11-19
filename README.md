@@ -1,6 +1,6 @@
 # Pocket District
 
-Game 3D chơi đơn bằng Cocos Creator 3.8.8. Điều khiển chiếc hố qua khu phố và nuốt đồ để tăng kích thước. Màn có **552 vật thể**, gồm **500 khối nhỏ** xếp thành 3 trụ tròn, 2 kim tự tháp và 3 trụ vuông. Trụ cao nhất có 10 tầng. Lướt dưới chân trụ để nuốt các khối dưới cùng và làm tầng trên hạ xuống.
+Game 3D chơi đơn bằng Cocos Creator 3.8.8. Điều khiển chiếc hố qua khu phố và nuốt đồ để tăng kích thước. Màn có **5.052 vật thể**, gồm **5.000 khối nhỏ** xếp thành 30 trụ tròn, 20 kim tự tháp và 30 trụ vuông. Trụ cao nhất có 10 tầng. Khi hố đi tới chân trụ, các khối mất điểm tựa rơi theo trọng lực qua miệng hố 3D.
 
 ## Chạy game
 

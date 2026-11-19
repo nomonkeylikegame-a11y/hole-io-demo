@@ -78,7 +78,7 @@ export class PocketDistrict extends Component {
         this.bumpCooldown -= step;
 
         const frame = this.round.advance(step, ...this.movement());
-        const { x, z, finished } = this.round.state;
+        const { x, z, radius, finished } = this.round.state;
         for (const prop of frame.changed) this.district.renderProp(prop, x, z);
         for (const prop of frame.swallowed) this.district.removeProp(prop);
 
@@ -89,11 +89,15 @@ export class PocketDistrict extends Component {
         if (frame.swallowed.length) {
             this.pulse = 1;
             const heavy = frame.swallowed.some(prop => prop.tier > 1);
+            this.district.swallowEffect(x, z, radius, this.time, frame.swallowed.length, heavy);
             if (heavy || this.time - this.lastGulp >= 0.12) {
                 this.play(heavy ? 'gulp-heavy' : 'gulp-soft');
                 this.lastGulp = this.time;
             }
-            if (frame.grew) this.play('grow');
+            if (frame.grew) {
+                this.district.growEffect(x, z, radius, this.time);
+                this.play('grow');
+            }
             if (finished) {
                 this.play('complete');
                 this.district.showFinish(true);
@@ -160,6 +164,7 @@ export class PocketDistrict extends Component {
         this.time = this.pulse = this.bumpCooldown = 0;
         this.lastGulp = -1;
         this.district.showFinish(false);
+        this.district.resetFeedback();
         this.renderRound(1);
         this.updateStatus();
     }
@@ -184,7 +189,7 @@ export class PocketDistrict extends Component {
     private renderRound(blend: number): void {
         const { x, z, radius } = this.round.state;
         this.district.pose(x, z, radius, this.time, this.pulse);
-        this.district.follow(x, z, radius, blend);
+        this.district.follow(x, z, radius, blend, this.time);
     }
 
     private updateStatus(): void {
