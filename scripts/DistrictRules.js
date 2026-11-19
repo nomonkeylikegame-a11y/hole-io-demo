@@ -1,25 +1,27 @@
-export const BOARD_HALF = 17;
+export const BOARD_HALF = 25;
 export const CAMERA_YAW = Math.PI * 0.171;
 const STACK_STEP = 0.33;
-export const TIER_MASS = [0, 25, 110, 240, 420];
+const GRAVITY = 15.5;
+const MOUTH_REACH = 0.92;
+export const TIER_MASS = [0, 25, 180, 520, 1150];
 export const TIER_RADIUS = [0.68, 0.99, 1.36, 1.82, 2.46];
 export const PROPS = [
-    { name: 'block', count: 500, footprint: 0.20, mass: 1 },
+    { name: 'block', count: 5000, footprint: 0.20, mass: 1 },
     { name: 'crate', count: 20, footprint: 0.43, mass: 2 },
     { name: 'bench', count: 14, footprint: 0.71, mass: 4 },
     { name: 'cart', count: 10, footprint: 1.02, mass: 7 },
     { name: 'house', count: 8, footprint: 1.53, mass: 12 },
 ];
 const START_STATE = { x: 0, z: 0, radius: TIER_RADIUS[0], mass: 0, tier: 0, eaten: 0, finished: false };
-const STACKS = [
-    { pattern: 'round', x: -1.12, z: -1.77, levels: 6 },
-    { pattern: 'square', x: 3.4, z: -3.95, levels: 6 },
-    { pattern: 'pyramid', x: -4.3, z: 2.6, levels: 6 },
-    { pattern: 'square', x: -5.7, z: -5.25, levels: 10 },
-    { pattern: 'round', x: 6.6, z: 3.75, levels: 7 },
-    { pattern: 'round', x: -6.6, z: 7.6, levels: 7 },
-    { pattern: 'square', x: 6.2, z: -6.8, levels: 4 },
-    { pattern: 'pyramid', x: 4.6, z: 9.1, levels: 6 },
+const STACK_RECIPES = [
+    { pattern: 'round', levels: 6 },
+    { pattern: 'square', levels: 6 },
+    { pattern: 'pyramid', levels: 6 },
+    { pattern: 'square', levels: 10 },
+    { pattern: 'round', levels: 7 },
+    { pattern: 'round', levels: 7 },
+    { pattern: 'square', levels: 4 },
+    { pattern: 'pyramid', levels: 6 },
 ];
 export function tierFor(mass) {
     let tier = 0;
@@ -31,8 +33,8 @@ export function tierFor(mass) {
 export function makeDistrict() {
     const result = [];
     const homes = [
-        [-12, -11], [-7.6, -12.8], [9.1, -12.2], [13.2, -7.4],
-        [-12.6, 7.7], [-8.1, 12.1], [7.6, 9.35], [12.8, 12.4],
+        [-17, -16], [-10, -18], [12, -17], [18, -10],
+        [-18, 10], [-9, 17], [10, 15], [18, 17],
     ];
     for (const [index, [x, z]] of homes.entries()) {
         result.push({ tier: 4, x, z, angle: index % 2 ? 0 : 90 });
@@ -42,18 +44,34 @@ export function makeDistrict() {
         seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
         return seed / 4294967296;
     };
+    const sites = [];
+    for (let row = -5; row <= 5; row++) {
+        for (let col = -5; col <= 5; col++) {
+            const x = col * 4.22 + (random() - 0.5) * 0.72;
+            const z = row * 4.22 + (random() - 0.5) * 0.72;
+            if (Math.hypot(x + 1.12, z + 1.77) < 2.9 || Math.hypot(x, z) < 3)
+                continue;
+            if (homes.some(([hx, hz]) => Math.hypot(hx - x, hz - z) < 2.9))
+                continue;
+            sites.push({ x, z, order: random() });
+        }
+    }
+    sites.sort((a, b) => a.order - b.order);
+    const stacks = [{ x: -1.12, z: -1.77 }, ...sites.slice(0, 79)].map((site, index) => (Object.assign(Object.assign({}, site), STACK_RECIPES[index % STACK_RECIPES.length])));
+    const span = BOARD_HALF - 1.6;
     for (let tier = 3; tier > 0; tier--) {
         const prop = PROPS[tier];
         let placed = 0;
         for (let attempt = 0; placed < prop.count && attempt < 3000; attempt++) {
-            const x = (random() * 2 - 1) * 15.45;
-            const z = (random() * 2 - 1) * 15.45;
+            const x = (random() * 2 - 1) * span;
+            const z = (random() * 2 - 1) * span;
             const distance = Math.hypot(x, z);
             if (distance < [0, 4.5, 6.6, 8.9][tier])
                 continue;
             if (tier >= 2 && (Math.abs(x) < 2.15 || Math.abs(z) < 2.15))
                 continue;
-            if (STACKS.some(stack => Math.hypot(x - stack.x, z - stack.z) < prop.footprint + 1.48))
+            if (stacks.some(stack => Math.hypot(x - stack.x, z - stack.z) <
+                prop.footprint + (stack.pattern === 'pyramid' ? 1.32 : 1.02)))
                 continue;
             const overlaps = result.some(other => Math.hypot(x - other.x, z - other.z) < prop.footprint + PROPS[other.tier].footprint + 0.62);
             if (overlaps)
@@ -64,15 +82,15 @@ export function makeDistrict() {
         if (placed !== prop.count)
             throw new Error(`Không đủ chỗ đặt ${prop.name}`);
     }
-    const blocks = makeStacks();
+    const blocks = makeStacks(stacks);
     if (blocks.length !== PROPS[0].count)
         throw new Error('Số khối nhỏ không khớp bố cục.');
     return [...blocks, ...result];
 }
-function makeStacks() {
+function makeStacks(stacks) {
     const blocks = [];
     let column = 0;
-    for (const { pattern, x, z, levels } of STACKS) {
+    for (const { pattern, x, z, levels } of stacks) {
         const addColumn = (dx, dz, angle, height) => {
             for (let level = 0; level < height; level++) {
                 blocks.push({ tier: 0, x: x + dx, z: z + dz, angle, stack: { pattern, column, level } });
@@ -100,8 +118,10 @@ function makeStacks() {
 export class DistrictRound {
     constructor() {
         this.layout = makeDistrict();
-        this.columnBase = [];
-        this.items = [];
+        this.items = new Set();
+        this.columns = [];
+        this.groundProps = [];
+        this.sinking = [];
         this.stats = Object.assign({}, START_STATE);
     }
     get state() {
@@ -114,72 +134,134 @@ export class DistrictRound {
         return this.layout.length;
     }
     reset() {
+        var _a, _b, _c;
+        var _d, _e;
         this.stats = Object.assign({}, START_STATE);
-        this.columnBase.length = 0;
-        this.items = this.layout.map(placement => {
-            var _a, _b;
-            return (Object.assign(Object.assign({}, placement), { height: ((_b = (_a = placement.stack) === null || _a === void 0 ? void 0 : _a.level) !== null && _b !== void 0 ? _b : 0) * STACK_STEP, swallow: -1 }));
-        });
+        this.items.clear();
+        this.columns.length = this.groundProps.length = this.sinking.length = 0;
+        for (const placement of this.layout) {
+            const prop = Object.assign(Object.assign({}, placement), { height: ((_b = (_a = placement.stack) === null || _a === void 0 ? void 0 : _a.level) !== null && _b !== void 0 ? _b : 0) * STACK_STEP, fallSpeed: 0 });
+            this.items.add(prop);
+            if (!prop.stack) {
+                this.groundProps.push(prop);
+                continue;
+            }
+            const column = (_c = (_d = this.columns)[_e = prop.stack.column]) !== null && _c !== void 0 ? _c : (_d[_e] = { blocks: [], settling: false });
+            column.blocks.push(prop);
+        }
     }
     advance(dt, right, forward) {
-        var _a;
         const frame = { changed: [], swallowed: [], blocked: false, grew: false };
         if (this.stats.finished)
             return frame;
         this.move(dt, right, forward);
-        const { x, z, radius, tier } = this.stats;
-        // Columns are stored bottom-first. Work down so a released block starts falling on the next step.
-        for (let index = this.items.length - 1; index >= 0; index--) {
-            const prop = this.items[index];
-            const data = PROPS[prop.tier];
-            if (prop.swallow < 0) {
-                if (prop.stack) {
-                    const { column, level } = prop.stack;
-                    const target = (level - ((_a = this.columnBase[column]) !== null && _a !== void 0 ? _a : 0)) * STACK_STEP;
-                    if (prop.height > target) {
-                        prop.height = Math.max(target, prop.height - dt * 3.5);
-                        frame.changed.push(prop);
-                        continue;
-                    }
-                    if (prop.height > 0)
-                        continue;
-                }
-                const distance = Math.hypot(prop.x - x, prop.z - z);
-                if (prop.tier > tier) {
-                    if (distance < radius * 0.79 + data.footprint * 0.43)
-                        frame.blocked = true;
-                    continue;
-                }
-                if (distance > radius - data.footprint * 0.48)
-                    continue;
-                prop.swallow = 0;
-            }
-            prop.swallow += dt / (prop.stack ? 0.2 : 0.35);
-            if (prop.swallow < 1 - 1e-6) {
-                frame.changed.push(prop);
-                continue;
-            }
-            if (prop.stack)
-                this.columnBase[prop.stack.column] = prop.stack.level + 1;
-            this.items.splice(index, 1);
-            frame.swallowed.push(prop);
-            this.stats.eaten++;
-            this.stats.mass += data.mass;
-        }
-        const next = tierFor(this.stats.mass);
+        this.advanceSinking(dt, frame);
+        this.advanceColumns(dt, frame);
+        this.catchGroundProps(frame);
+        const { radius, tier, mass } = this.stats;
+        const next = tierFor(mass);
         frame.grew = next > tier;
         this.stats.tier = next;
         this.stats.radius += (TIER_RADIUS[next] - radius) * (1 - Math.exp(-dt * 9));
-        this.stats.finished = this.stats.eaten === this.total;
+        if (this.stats.radius !== radius)
+            this.keepOnBoard();
+        this.stats.finished = this.items.size === 0;
         return frame;
     }
+    advanceColumns(dt, frame) {
+        const { x, z, radius } = this.stats;
+        const reach = radius * MOUTH_REACH - PROPS[0].footprint * 0.48;
+        for (const column of this.columns) {
+            const base = column.blocks[0];
+            if (!base)
+                continue;
+            const dx = base.x - x;
+            const dz = base.z - z;
+            const unsupported = dx * dx + dz * dz <= reach * reach;
+            if (!unsupported && !column.settling)
+                continue;
+            let support = unsupported ? -Infinity : 0;
+            let supportSpeed = 0;
+            let entered = 0;
+            column.settling = false;
+            for (const prop of column.blocks) {
+                const previous = prop.height;
+                const previousSpeed = prop.fallSpeed;
+                const height = this.fall(prop, dt);
+                prop.height = Math.max(height, support);
+                if (height <= support)
+                    prop.fallSpeed = supportSpeed;
+                if (unsupported && prop.height <= 0) {
+                    this.enterHole(prop, frame);
+                    entered++;
+                    continue;
+                }
+                support = prop.height + STACK_STEP;
+                supportSpeed = prop.fallSpeed;
+                if (prop.fallSpeed > 0)
+                    column.settling = true;
+                if (prop.height !== previous || prop.fallSpeed !== previousSpeed)
+                    frame.changed.push(prop);
+            }
+            // Every unsupported block starts falling together. Blocks above the lip can land if the hole moves away.
+            if (entered)
+                column.blocks.splice(0, entered);
+        }
+    }
+    catchGroundProps(frame) {
+        const { x, z, radius, tier } = this.stats;
+        for (let i = this.groundProps.length - 1; i >= 0; i--) {
+            const prop = this.groundProps[i];
+            const { footprint } = PROPS[prop.tier];
+            const distance = Math.hypot(prop.x - x, prop.z - z);
+            if (prop.tier > tier) {
+                if (distance < radius * 0.79 + footprint * 0.43)
+                    frame.blocked = true;
+            }
+            else if (distance <= radius * MOUTH_REACH - footprint * 0.48) {
+                this.groundProps.splice(i, 1);
+                prop.fallSpeed = 0.4;
+                this.enterHole(prop, frame);
+            }
+        }
+    }
+    enterHole(prop, frame) {
+        const { x, z, radius } = this.stats;
+        prop.entry = { x: prop.x - x, z: prop.z - z, depth: radius * 1.55 };
+        this.sinking.push(prop);
+        frame.changed.push(prop);
+    }
+    advanceSinking(dt, frame) {
+        for (let i = this.sinking.length - 1; i >= 0; i--) {
+            const prop = this.sinking[i];
+            prop.height = this.fall(prop, dt);
+            if (prop.height > -prop.entry.depth) {
+                frame.changed.push(prop);
+                continue;
+            }
+            this.sinking.splice(i, 1);
+            this.items.delete(prop);
+            frame.swallowed.push(prop);
+            this.stats.eaten++;
+            this.stats.mass += PROPS[prop.tier].mass;
+        }
+    }
+    fall(prop, dt) {
+        const height = prop.height - (prop.fallSpeed + 0.5 * GRAVITY * dt) * dt;
+        prop.fallSpeed += GRAVITY * dt;
+        return height;
+    }
     move(dt, right, forward) {
-        const { radius, tier } = this.stats;
-        const distance = (7.65 + 0.18 * tier) * dt / Math.max(1, Math.hypot(right, forward));
+        const distance = (7.65 + 0.18 * this.stats.tier) * dt / Math.max(1, Math.hypot(right, forward));
         const cos = Math.cos(CAMERA_YAW);
         const sin = Math.sin(CAMERA_YAW);
-        const edge = BOARD_HALF - radius * 0.47;
-        this.stats.x = Math.max(-edge, Math.min(edge, this.stats.x + (right * cos - forward * sin) * distance));
-        this.stats.z = Math.max(-edge, Math.min(edge, this.stats.z + (-right * sin - forward * cos) * distance));
+        this.stats.x += (right * cos - forward * sin) * distance;
+        this.stats.z += (-right * sin - forward * cos) * distance;
+        this.keepOnBoard();
+    }
+    keepOnBoard() {
+        const edge = BOARD_HALF - this.stats.radius - 0.05;
+        this.stats.x = Math.max(-edge, Math.min(edge, this.stats.x));
+        this.stats.z = Math.max(-edge, Math.min(edge, this.stats.z));
     }
 }
