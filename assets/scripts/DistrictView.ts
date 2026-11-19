@@ -2,7 +2,7 @@ import {
     Camera, Canvas, Color, Graphics, HorizontalTextAlignment, Label, Layers, Material,
     Mesh, MeshRenderer, Node, primitives, Texture2D, UITransform, utils, Vec3, view,
 } from 'cc';
-import { BOARD_HALF, CAMERA_YAW, Placement, PROPS, TIER_MASS } from './DistrictRules';
+import { BOARD_HALF, CAMERA_YAW, Placement, PROPS, StackPattern, STACK_STEP, TIER_MASS } from './DistrictRules';
 
 interface Geometry {
     positions: number[];
@@ -18,7 +18,7 @@ export interface Art {
 
 export interface PropView {
     model: Node;
-    shadow: Node;
+    shadow?: Node;
 }
 
 const COL = {
@@ -43,7 +43,7 @@ export class DistrictView {
     private readonly audio: Label;
     private readonly replay: Label;
     private readonly targets = new Map<Node, { width: number; height: number }>();
-    private readonly materials = new Map<string | Texture2D, Material>();
+    private readonly materials: Material[] = [];
     private readonly models: Mesh[] = [];
     private readonly meshes: Mesh[] = [];
     private readonly focus = new Vec3();
@@ -53,6 +53,7 @@ export class DistrictView {
     private readonly disk: Mesh;
     private softShadow!: Material;
     private propMaterial!: Material;
+    private stackMaterials!: Record<StackPattern, Material>;
     private statsWidth = 282;
     private width = 0;
     private height = 0;
@@ -131,13 +132,21 @@ export class DistrictView {
         this.addMesh(this.world, 'Mặt đường', ground, this.material('#ffffff', art.paving), 0, 0, 0);
         this.softShadow = this.material('#4b493c41');
         this.propMaterial = this.material('#ffffff', art.atlas);
+        this.stackMaterials = {
+            round: this.material('#76d8dd', art.atlas, true),
+            pyramid: this.material('#ffad83', art.atlas, true),
+            square: this.material('#c5a9ec', art.atlas, true),
+        };
         for (const prop of PROPS) this.models.push(this.mesh(art.props[prop.name]));
     }
 
     createProp(placement: Placement): PropView {
-        const { tier, x, z, angle } = placement;
-        const model = this.addMesh(this.world, PROPS[tier].name, this.models[tier], this.propMaterial, x, 0, z);
+        const { tier, x, z, angle, stack } = placement;
+        const material = stack ? this.stackMaterials[stack.pattern] : this.propMaterial;
+        const y = stack ? stack.level * STACK_STEP : 0;
+        const model = this.addMesh(this.world, PROPS[tier].name, this.models[tier], material, x, y, z);
         model.setRotationFromEuler(0, angle, 0);
+        if (stack) return { model };
         const shadow = this.addMesh(this.world, 'Bóng', this.disk, this.softShadow, x + 0.13, 0.012, z + 0.14);
         const size = PROPS[tier].footprint;
         shadow.setScale(size * 1.15, 1, size * 0.83);
@@ -241,7 +250,7 @@ export class DistrictView {
         this.world.destroy();
         this.canvas.destroy();
         for (const mesh of this.meshes) mesh.destroy();
-        for (const material of this.materials.values()) material.destroy();
+        for (const material of this.materials) material.destroy();
     }
 
     private mesh(geo: Geometry): Mesh {
@@ -250,16 +259,13 @@ export class DistrictView {
         return mesh;
     }
 
-    private material(hex: string, texture?: Texture2D): Material {
-        const key = texture ?? hex;
-        const existing = this.materials.get(key);
-        if (existing) return existing;
+    private material(hex: string, texture?: Texture2D, instanced = false): Material {
         const material = new Material();
         material.initialize({ effectName: 'builtin-unlit', technique: hex.length === 9 ? 1 : 0,
-            defines: { USE_TEXTURE: !!texture } });
+            defines: { USE_TEXTURE: !!texture, USE_INSTANCING: instanced } });
         material.setProperty('mainColor', tint(hex));
         if (texture) material.setProperty('mainTexture', texture);
-        this.materials.set(key, material);
+        this.materials.push(material);
         return material;
     }
 
