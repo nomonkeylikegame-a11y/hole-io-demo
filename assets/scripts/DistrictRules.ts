@@ -1,26 +1,50 @@
 export const BOARD_HALF = 17;
 export const CAMERA_YAW = Math.PI * 0.171;
-export const STACK_STEP = 0.33;
+const STACK_STEP = 0.33;
 export const TIER_MASS = [0, 25, 110, 240, 420];
 export const TIER_RADIUS = [0.68, 0.99, 1.36, 1.82, 2.46];
 
 export const PROPS = [
-    { name: 'block', label: 'khối nhỏ', count: 500, footprint: 0.20, mass: 1 },
-    { name: 'crate', label: 'thùng trái cây', count: 20, footprint: 0.43, mass: 2 },
-    { name: 'bench', label: 'ghế băng', count: 14, footprint: 0.71, mass: 4 },
-    { name: 'cart', label: 'xe bán hàng', count: 10, footprint: 1.02, mass: 7 },
-    { name: 'house', label: 'nhà phố', count: 8, footprint: 1.53, mass: 12 },
+    { name: 'block', count: 500, footprint: 0.20, mass: 1 },
+    { name: 'crate', count: 20, footprint: 0.43, mass: 2 },
+    { name: 'bench', count: 14, footprint: 0.71, mass: 4 },
+    { name: 'cart', count: 10, footprint: 1.02, mass: 7 },
+    { name: 'house', count: 8, footprint: 1.53, mass: 12 },
 ] as const;
 
 export type StackPattern = 'round' | 'pyramid' | 'square';
 
-export interface Placement {
+interface Placement {
     tier: number;
     x: number;
     z: number;
     angle: number;
     stack?: { pattern: StackPattern; column: number; level: number };
 }
+
+export interface PropState extends Placement {
+    height: number;
+    swallow: number;
+}
+
+interface RoundState {
+    x: number;
+    z: number;
+    radius: number;
+    mass: number;
+    tier: number;
+    eaten: number;
+    finished: boolean;
+}
+
+interface RoundStep {
+    changed: PropState[];
+    swallowed: PropState[];
+    blocked: boolean;
+    grew: boolean;
+}
+
+const START_STATE: RoundState = { x: 0, z: 0, radius: TIER_RADIUS[0], mass: 0, tier: 0, eaten: 0, finished: false };
 
 const STACKS: { pattern: StackPattern; x: number; z: number; levels: number }[] = [
     { pattern: 'round', x: -1.12, z: -1.77, levels: 6 },
@@ -109,4 +133,95 @@ function makeStacks(): Placement[] {
         }
     }
     return blocks;
+}
+
+export class DistrictRound {
+    private readonly layout = makeDistrict();
+    private readonly columnBase: number[] = [];
+    private items: PropState[] = [];
+    private stats: RoundState = { ...START_STATE };
+
+    get state(): Readonly<RoundState> {
+        return this.stats;
+    }
+
+    get props(): readonly Readonly<PropState>[] {
+        return this.items;
+    }
+
+    get total(): number {
+        return this.layout.length;
+    }
+
+    reset(): void {
+        this.stats = { ...START_STATE };
+        this.columnBase.length = 0;
+        this.items = this.layout.map(placement => ({
+            ...placement,
+            height: (placement.stack?.level ?? 0) * STACK_STEP,
+            swallow: -1,
+        }));
+    }
+
+    advance(dt: number, right: number, forward: number): RoundStep {
+        const frame: RoundStep = { changed: [], swallowed: [], blocked: false, grew: false };
+        if (this.stats.finished) return frame;
+
+        this.move(dt, right, forward);
+        const { x, z, radius, tier } = this.stats;
+        // Columns are stored bottom-first. Work down so a released block starts falling on the next step.
+        for (let index = this.items.length - 1; index >= 0; index--) {
+            const prop = this.items[index];
+            const data = PROPS[prop.tier];
+            if (prop.swallow < 0) {
+                if (prop.stack) {
+                    const { column, level } = prop.stack;
+                    const target = (level - (this.columnBase[column] ?? 0)) * STACK_STEP;
+                    if (prop.height > target) {
+                        prop.height = Math.max(target, prop.height - dt * 3.5);
+                        frame.changed.push(prop);
+                        continue;
+                    }
+                    if (prop.height > 0) continue;
+                }
+
+                const distance = Math.hypot(prop.x - x, prop.z - z);
+                if (prop.tier > tier) {
+                    if (distance < radius * 0.79 + data.footprint * 0.43) frame.blocked = true;
+                    continue;
+                }
+                if (distance > radius - data.footprint * 0.48) continue;
+                prop.swallow = 0;
+            }
+
+            prop.swallow += dt / (prop.stack ? 0.2 : 0.35);
+            if (prop.swallow < 1 - 1e-6) {
+                frame.changed.push(prop);
+                continue;
+            }
+
+            if (prop.stack) this.columnBase[prop.stack.column] = prop.stack.level + 1;
+            this.items.splice(index, 1);
+            frame.swallowed.push(prop);
+            this.stats.eaten++;
+            this.stats.mass += data.mass;
+        }
+
+        const next = tierFor(this.stats.mass);
+        frame.grew = next > tier;
+        this.stats.tier = next;
+        this.stats.radius += (TIER_RADIUS[next] - radius) * (1 - Math.exp(-dt * 9));
+        this.stats.finished = this.stats.eaten === this.total;
+        return frame;
+    }
+
+    private move(dt: number, right: number, forward: number): void {
+        const { radius, tier } = this.stats;
+        const distance = (7.65 + 0.18 * tier) * dt / Math.max(1, Math.hypot(right, forward));
+        const cos = Math.cos(CAMERA_YAW);
+        const sin = Math.sin(CAMERA_YAW);
+        const edge = BOARD_HALF - radius * 0.47;
+        this.stats.x = Math.max(-edge, Math.min(edge, this.stats.x + (right * cos - forward * sin) * distance));
+        this.stats.z = Math.max(-edge, Math.min(edge, this.stats.z + (-right * sin - forward * cos) * distance));
+    }
 }

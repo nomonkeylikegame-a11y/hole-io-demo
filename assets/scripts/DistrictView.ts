@@ -2,7 +2,7 @@ import {
     Camera, Canvas, Color, Graphics, HorizontalTextAlignment, Label, Layers, Material,
     Mesh, MeshRenderer, Node, primitives, Texture2D, UITransform, utils, Vec3, view,
 } from 'cc';
-import { BOARD_HALF, CAMERA_YAW, Placement, PROPS, StackPattern, STACK_STEP, TIER_MASS } from './DistrictRules';
+import { BOARD_HALF, CAMERA_YAW, PROPS, PropState, StackPattern, TIER_MASS, TIER_RADIUS } from './DistrictRules';
 
 interface Geometry {
     positions: number[];
@@ -16,14 +16,14 @@ export interface Art {
     props: Record<string, Geometry>;
 }
 
-export interface PropView {
+interface PropView {
     model: Node;
     shadow?: Node;
 }
 
 const COL = {
     ink: '#172937', panel: '#223846', cream: '#fff6dc', muted: '#c0d1c4',
-    mint: '#a6e0ab', gold: '#ffc877', light: '#f8e8bf',
+    mint: '#a6e0ab',
 };
 const tint = (value: string): Color => Color.fromHEX(new Color(), value);
 
@@ -33,16 +33,15 @@ export class DistrictView {
     private readonly canvas: Node;
     private readonly left: Node;
     private readonly controls: Node;
-    private readonly bottom: Node;
     private readonly finish: Node;
     private readonly title: Label;
     private readonly objective: Label;
     private readonly status: Label;
     private readonly progress: Graphics;
-    private readonly hint: Label;
     private readonly audio: Label;
     private readonly replay: Label;
     private readonly targets = new Map<Node, { width: number; height: number }>();
+    private readonly props = new Map<Readonly<PropState>, PropView>();
     private readonly materials: Material[] = [];
     private readonly models: Mesh[] = [];
     private readonly meshes: Mesh[] = [];
@@ -82,8 +81,8 @@ export class DistrictView {
             this.addMesh(this.marker, 'Chấm', this.disk, dot, Math.cos(turn) * 0.967, 0.076, Math.sin(turn) * 0.967)
                 .setScale(0.041, 1, 0.041);
         }
-        this.pose(0, 0, 0.68, 0, 0);
-        this.follow(0, 0, 0.68, 1);
+        this.pose(0, 0, TIER_RADIUS[0], 0, 0);
+        this.follow(0, 0, TIER_RADIUS[0], 1);
 
         this.canvas = this.child(parent, 'Giao diện', true);
         this.canvas.addComponent(UITransform).setContentSize(1280, 720);
@@ -104,9 +103,6 @@ export class DistrictView {
         this.controls = this.child(this.canvas, 'Điều khiển', true);
         this.audio = this.button(this.controls, 'Có tiếng', 105, onAudio);
         this.replay = this.button(this.controls, 'Chơi lại', 91, onRestart);
-
-        this.bottom = this.child(this.canvas, 'Gợi ý', true);
-        this.hint = this.label(this.bottom, '', 16, COL.cream, true, true);
 
         this.finish = this.child(this.canvas, 'Hoàn thành', true);
         this.label(this.finish, 'Đã dọn xong!', 32, COL.cream, true, true).node.setPosition(0, 43);
@@ -140,11 +136,37 @@ export class DistrictView {
         for (const prop of PROPS) this.models.push(this.mesh(art.props[prop.name]));
     }
 
-    createProp(placement: Placement): PropView {
-        const { tier, x, z, angle, stack } = placement;
+    resetProps(props: readonly Readonly<PropState>[]): void {
+        for (const prop of this.props.keys()) this.removeProp(prop);
+        for (const prop of props) this.props.set(prop, this.createProp(prop));
+    }
+
+    renderProp(prop: Readonly<PropState>, holeX: number, holeZ: number): void {
+        const { model, shadow } = this.props.get(prop)!;
+        const { x, z, height, swallow, angle } = prop;
+        if (swallow < 0) {
+            model.setPosition(x, height, z);
+            return;
+        }
+
+        if (shadow) shadow.active = false;
+        const scale = Math.max(0.025, 1 - swallow * swallow);
+        model.setScale(scale, scale, scale);
+        model.setRotationFromEuler(swallow * 55, angle + swallow * 108, -swallow * 13);
+        model.setPosition(x + (holeX - x) * swallow, -0.76 * swallow * swallow, z + (holeZ - z) * swallow);
+    }
+
+    removeProp(prop: Readonly<PropState>): void {
+        const { model, shadow } = this.props.get(prop)!;
+        model.destroy();
+        shadow?.destroy();
+        this.props.delete(prop);
+    }
+
+    private createProp(prop: Readonly<PropState>): PropView {
+        const { tier, x, z, angle, height, stack } = prop;
         const material = stack ? this.stackMaterials[stack.pattern] : this.propMaterial;
-        const y = stack ? stack.level * STACK_STEP : 0;
-        const model = this.addMesh(this.world, PROPS[tier].name, this.models[tier], material, x, y, z);
+        const model = this.addMesh(this.world, PROPS[tier].name, this.models[tier], material, x, height, z);
         model.setRotationFromEuler(0, angle, 0);
         if (stack) return { model };
         const shadow = this.addMesh(this.world, 'Bóng', this.disk, this.softShadow, x + 0.13, 0.012, z + 0.14);
@@ -203,11 +225,6 @@ export class DistrictView {
         this.controls.setPosition(width / 2 - margin, topEdge - (compact ? 160 : 24));
         this.audio.node.parent!.setPosition(-154, 0);
         this.replay.node.parent!.setPosition(-45.5, 0);
-        this.bottom.setPosition(0, -height / 2 + margin + 23);
-        const hintWidth = Math.min(438, width - 2 * margin);
-        this.panel(this.bottom, hintWidth, 44, COL.ink);
-        this.hint.overflow = Label.Overflow.SHRINK;
-        this.hint.node.getComponent(UITransform)!.setContentSize(hintWidth - 24, 38);
         this.panel(this.finish, Math.min(320, width - 2 * margin), 170, COL.ink);
         return true;
     }
@@ -225,8 +242,8 @@ export class DistrictView {
         if (progress > 0) this.fill(this.progress, 0, 0, Math.max(6, width * progress), 6, 3, COL.mint);
     }
 
-    message(text: string): void {
-        this.hint.string = text;
+    showLoadError(): void {
+        this.objective.string = 'Không tải được khu phố.';
     }
 
     setMuted(muted: boolean): void {

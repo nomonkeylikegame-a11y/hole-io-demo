@@ -12,10 +12,10 @@ Game 3D chơi đơn bằng Cocos Creator 3.8.8. Điều khiển chiếc hố qua
 
 Để xuất Web Desktop hoặc Web Mobile, chọn nền tảng tương ứng trong **Project → Build** và dùng `PocketDistrict` làm cảnh khởi động.
 
-## Cấu trúc
+## Cấu trúc MVC
 
-- `PocketDistrict.ts` là Cocos component duy nhất. File quản lý input, vòng chơi, âm thanh và chuyển trạng thái.
-- `DistrictRules.ts` chứa các loại vật thể, ngưỡng cấp và bố cục cố định theo seed.
-- `DistrictView.ts` dựng khu phố, camera và HUD bằng các tiện ích tích hợp của Cocos.
+- `DistrictRules.ts` chứa model TypeScript thuần với bố cục, chuyển động, cách nuốt vật và tiến độ vòng chơi.
+- `DistrictView.ts` dựng khu phố, hoạt ảnh, camera và HUD bằng Cocos.
+- `PocketDistrict.ts` là controller Cocos duy nhất. File nhận input, tải tài nguyên và chuyển kết quả từng khung hình từ model sang phần hiển thị và âm thanh.
 
 `source-art/` chứa các model FBX gốc, gồm `block.fbx` dùng cho các trụ. Game dùng mesh đã bake từ bộ model, texture PNG tự tạo và âm thanh OGG/WAV trong `assets/resources/`. Nhạc nền *Side Street* là một bản loop nhẹ, đi cùng 7 hiệu ứng cho nuốt vật nhỏ/lớn, hụt, lên cấp, bật tiếng, chơi lại và hoàn thành.
