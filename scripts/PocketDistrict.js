@@ -5,7 +5,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 import { _decorator, AudioClip, AudioSource, Component, Game, game, Input, input, JsonAsset, KeyCode, ResolutionPolicy, resources, Texture2D, Vec2, view, } from 'cc';
-import { BOARD_HALF, CAMERA_YAW, makeDistrict, PROPS, tierFor, TIER_RADIUS } from './DistrictRules.js';
+import { BOARD_HALF, CAMERA_YAW, makeDistrict, PROPS, STACK_STEP, tierFor, TIER_RADIUS } from './DistrictRules.js';
 import { DistrictView } from './DistrictView.js';
 const { ccclass } = _decorator;
 const SFX = ['gulp-soft', 'gulp-heavy', 'too-big', 'grow', 'tap', 'restart', 'complete'];
@@ -16,6 +16,7 @@ let PocketDistrict = class PocketDistrict extends Component {
         super(...arguments);
         this.clips = new Map();
         this.layout = makeDistrict();
+        this.columnBase = [];
         this.keys = new Set();
         this.dragFrom = new Vec2();
         this.dragTo = new Vec2();
@@ -31,6 +32,7 @@ let PocketDistrict = class PocketDistrict extends Component {
         this.pulse = 0;
         this.notice = 0;
         this.bumpCooldown = 0;
+        this.lastGulp = -1;
         this.ready = false;
         this.finished = false;
         this.muted = false;
@@ -160,14 +162,20 @@ let PocketDistrict = class PocketDistrict extends Component {
         });
     }
     resetRound() {
+        var _a;
         for (const prop of this.props) {
             prop.model.destroy();
-            prop.shadow.destroy();
+            (_a = prop.shadow) === null || _a === void 0 ? void 0 : _a.destroy();
         }
-        this.props = this.layout.map(placement => (Object.assign(Object.assign(Object.assign({}, placement), this.district.createProp(placement)), { age: -1 })));
+        this.columnBase.length = 0;
+        this.props = this.layout.map(placement => {
+            var _a, _b;
+            return (Object.assign(Object.assign(Object.assign({}, placement), this.district.createProp(placement)), { age: -1, height: ((_b = (_a = placement.stack) === null || _a === void 0 ? void 0 : _a.level) !== null && _b !== void 0 ? _b : 0) * STACK_STEP }));
+        });
         this.clearInput();
         this.x = this.z = this.mass = this.tier = this.eaten = 0;
         this.time = this.pulse = this.notice = this.bumpCooldown = 0;
+        this.lastGulp = -1;
         this.radius = TIER_RADIUS[0];
         this.finished = false;
         this.district.pose(0, 0, this.radius, 0, 0);
@@ -198,10 +206,22 @@ let PocketDistrict = class PocketDistrict extends Component {
         this.z = Math.max(-edge, Math.min(edge, this.z + (-right * sin - forward * cos) * distance));
     }
     updateProps(dt) {
+        var _a, _b;
+        let gulp;
         for (let index = this.props.length - 1; index >= 0; index--) {
             const prop = this.props[index];
             const data = PROPS[prop.tier];
             if (prop.age < 0) {
+                if (prop.stack) {
+                    const { column, level } = prop.stack;
+                    const target = (level - ((_a = this.columnBase[column]) !== null && _a !== void 0 ? _a : 0)) * STACK_STEP;
+                    if (prop.height > target) {
+                        prop.height = Math.max(target, prop.height - dt * 3.5);
+                        prop.model.setPosition(prop.x, prop.height, prop.z);
+                    }
+                    if (prop.height > 0)
+                        continue;
+                }
                 const distance = Math.hypot(prop.x - this.x, prop.z - this.z);
                 if (prop.tier > this.tier) {
                     if (distance < this.radius * 0.79 + data.footprint * 0.43 && this.bumpCooldown <= 0) {
@@ -214,10 +234,11 @@ let PocketDistrict = class PocketDistrict extends Component {
                 if (distance > this.radius - data.footprint * 0.48)
                     continue;
                 prop.age = 0;
-                prop.shadow.active = false;
+                if (prop.shadow)
+                    prop.shadow.active = false;
             }
             prop.age += dt;
-            const t = Math.min(1, prop.age / SWALLOW_TIME);
+            const t = Math.min(1, prop.age / (prop.stack ? 0.2 : SWALLOW_TIME));
             const scale = Math.max(0.025, 1 - t * t);
             prop.model.setScale(scale, scale, scale);
             prop.model.setRotationFromEuler(t * 55, prop.angle + t * 108, -t * 13);
@@ -225,25 +246,36 @@ let PocketDistrict = class PocketDistrict extends Component {
             if (t < 1)
                 continue;
             prop.model.destroy();
-            prop.shadow.destroy();
+            (_b = prop.shadow) === null || _b === void 0 ? void 0 : _b.destroy();
+            if (prop.stack)
+                this.columnBase[prop.stack.column] = prop.stack.level + 1;
             this.props.splice(index, 1);
             this.eaten++;
             this.mass += data.mass;
-            this.pulse = 1;
-            this.play(prop.tier <= 1 ? 'gulp-soft' : 'gulp-heavy');
-            const next = tierFor(this.mass);
-            if (next > this.tier) {
-                this.tier = next;
-                this.play('grow');
-                this.say(`Cấp ${next + 1}! Giờ nuốt được ${PROPS[next].label}.`, 3);
-            }
-            this.updateStatus();
-            if (this.eaten === this.layout.length) {
-                this.finished = true;
-                this.play('complete');
-                this.district.message('Đã nuốt hết vật thể trong khu phố.');
-                this.district.showFinish(true);
-            }
+            if (prop.tier > 1)
+                gulp = 'gulp-heavy';
+            else
+                gulp !== null && gulp !== void 0 ? gulp : (gulp = 'gulp-soft');
+        }
+        if (!gulp)
+            return;
+        this.pulse = 1;
+        if (gulp === 'gulp-heavy' || this.time - this.lastGulp >= 0.12) {
+            this.play(gulp);
+            this.lastGulp = this.time;
+        }
+        const next = tierFor(this.mass);
+        if (next > this.tier) {
+            this.tier = next;
+            this.play('grow');
+            this.say(`Cấp ${next + 1}! Giờ nuốt được ${PROPS[next].label}.`, 3);
+        }
+        this.updateStatus();
+        if (this.eaten === this.layout.length) {
+            this.finished = true;
+            this.play('complete');
+            this.district.message('Đã nuốt hết vật thể trong khu phố.');
+            this.district.showFinish(true);
         }
     }
     updateStatus() {
