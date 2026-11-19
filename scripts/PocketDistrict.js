@@ -5,36 +5,24 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 import { _decorator, AudioClip, AudioSource, Component, Game, game, Input, input, JsonAsset, KeyCode, ResolutionPolicy, resources, Texture2D, Vec2, view, } from 'cc';
-import { BOARD_HALF, CAMERA_YAW, makeDistrict, PROPS, STACK_STEP, tierFor, TIER_RADIUS } from './DistrictRules.js';
+import { DistrictRound } from './DistrictRules.js';
 import { DistrictView } from './DistrictView.js';
 const { ccclass } = _decorator;
 const SFX = ['gulp-soft', 'gulp-heavy', 'too-big', 'grow', 'tap', 'restart', 'complete'];
-const START_HINT = 'WASD / phím mũi tên · Kéo để di chuyển';
-const SWALLOW_TIME = 0.35;
 let PocketDistrict = class PocketDistrict extends Component {
     constructor() {
         super(...arguments);
         this.clips = new Map();
-        this.layout = makeDistrict();
-        this.columnBase = [];
+        this.round = new DistrictRound();
         this.keys = new Set();
         this.dragFrom = new Vec2();
         this.dragTo = new Vec2();
         this.touchId = null;
-        this.props = [];
-        this.x = 0;
-        this.z = 0;
-        this.mass = 0;
-        this.tier = 0;
-        this.eaten = 0;
-        this.radius = TIER_RADIUS[0];
         this.time = 0;
         this.pulse = 0;
-        this.notice = 0;
         this.bumpCooldown = 0;
         this.lastGulp = -1;
         this.ready = false;
-        this.finished = false;
         this.muted = false;
         this.interacted = false;
         this.restart = () => {
@@ -61,7 +49,6 @@ let PocketDistrict = class PocketDistrict extends Component {
         view.resizeWithBrowserSize(true);
         view.setDesignResolutionSize(1280, 720, ResolutionPolicy.FIXED_HEIGHT);
         this.district = new DistrictView(this.node, this.toggleMute, this.restart);
-        this.district.message('Đang tải khu phố…');
         this.music = this.node.addComponent(AudioSource);
         this.music.playOnAwake = false;
         this.music.loop = true;
@@ -95,26 +82,40 @@ let PocketDistrict = class PocketDistrict extends Component {
         this.district.dispose();
     }
     update(dt) {
-        if (this.district.resize() && this.ready)
-            this.updateStatus();
+        const resized = this.district.resize();
         if (!this.ready)
             return;
         const step = Math.min(dt, 0.05);
         this.time += step;
         this.bumpCooldown -= step;
-        if (this.notice > 0) {
-            this.notice -= step;
-            if (this.notice <= 0 && !this.finished)
-                this.district.message(START_HINT);
+        const frame = this.round.advance(step, ...this.movement());
+        const { x, z, finished } = this.round.state;
+        for (const prop of frame.changed)
+            this.district.renderProp(prop, x, z);
+        for (const prop of frame.swallowed)
+            this.district.removeProp(prop);
+        if (frame.blocked && this.bumpCooldown <= 0) {
+            this.bumpCooldown = 1.4;
+            this.play('too-big');
         }
-        if (!this.finished) {
-            this.move(step);
-            this.updateProps(step);
+        if (frame.swallowed.length) {
+            this.pulse = 1;
+            const heavy = frame.swallowed.some(prop => prop.tier > 1);
+            if (heavy || this.time - this.lastGulp >= 0.12) {
+                this.play(heavy ? 'gulp-heavy' : 'gulp-soft');
+                this.lastGulp = this.time;
+            }
+            if (frame.grew)
+                this.play('grow');
+            if (finished) {
+                this.play('complete');
+                this.district.showFinish(true);
+            }
         }
-        this.radius += (TIER_RADIUS[this.tier] - this.radius) * (1 - Math.exp(-step * 9));
+        if (resized || frame.swallowed.length)
+            this.updateStatus();
         this.pulse = Math.max(0, this.pulse - step * 2.7);
-        this.district.pose(this.x, this.z, this.radius, this.time, this.pulse);
-        this.district.follow(this.x, this.z, this.radius, 1 - Math.exp(-step * 4.7));
+        this.renderRound(1 - Math.exp(-step * 4.7));
     }
     async load() {
         try {
@@ -134,7 +135,7 @@ let PocketDistrict = class PocketDistrict extends Component {
             if (!this.isValid)
                 return;
             console.error(error);
-            this.district.message('Không tải được tài nguyên. Hãy mở lại màn chơi.');
+            this.district.showLoadError();
         }
     }
     async loadAudio() {
@@ -162,29 +163,16 @@ let PocketDistrict = class PocketDistrict extends Component {
         });
     }
     resetRound() {
-        var _a;
-        for (const prop of this.props) {
-            prop.model.destroy();
-            (_a = prop.shadow) === null || _a === void 0 ? void 0 : _a.destroy();
-        }
-        this.columnBase.length = 0;
-        this.props = this.layout.map(placement => {
-            var _a, _b;
-            return (Object.assign(Object.assign(Object.assign({}, placement), this.district.createProp(placement)), { age: -1, height: ((_b = (_a = placement.stack) === null || _a === void 0 ? void 0 : _a.level) !== null && _b !== void 0 ? _b : 0) * STACK_STEP }));
-        });
+        this.round.reset();
+        this.district.resetProps(this.round.props);
         this.clearInput();
-        this.x = this.z = this.mass = this.tier = this.eaten = 0;
-        this.time = this.pulse = this.notice = this.bumpCooldown = 0;
+        this.time = this.pulse = this.bumpCooldown = 0;
         this.lastGulp = -1;
-        this.radius = TIER_RADIUS[0];
-        this.finished = false;
-        this.district.pose(0, 0, this.radius, 0, 0);
-        this.district.follow(0, 0, this.radius, 1);
-        this.district.message(START_HINT);
         this.district.showFinish(false);
+        this.renderRound(1);
         this.updateStatus();
     }
-    move(dt) {
+    movement() {
         const down = (key, alt) => Number(this.keys.has(key) || this.keys.has(alt));
         let right = down(KeyCode.KEY_D, KeyCode.ARROW_RIGHT) - down(KeyCode.KEY_A, KeyCode.ARROW_LEFT);
         let forward = down(KeyCode.KEY_W, KeyCode.ARROW_UP) - down(KeyCode.KEY_S, KeyCode.ARROW_DOWN);
@@ -198,92 +186,16 @@ let PocketDistrict = class PocketDistrict extends Component {
                 forward += dy * power;
             }
         }
-        const distance = (7.65 + 0.18 * this.tier) * dt / Math.max(1, Math.hypot(right, forward));
-        const cos = Math.cos(CAMERA_YAW);
-        const sin = Math.sin(CAMERA_YAW);
-        const edge = BOARD_HALF - this.radius * 0.47;
-        this.x = Math.max(-edge, Math.min(edge, this.x + (right * cos - forward * sin) * distance));
-        this.z = Math.max(-edge, Math.min(edge, this.z + (-right * sin - forward * cos) * distance));
+        return [right, forward];
     }
-    updateProps(dt) {
-        var _a, _b;
-        let gulp;
-        for (let index = this.props.length - 1; index >= 0; index--) {
-            const prop = this.props[index];
-            const data = PROPS[prop.tier];
-            if (prop.age < 0) {
-                if (prop.stack) {
-                    const { column, level } = prop.stack;
-                    const target = (level - ((_a = this.columnBase[column]) !== null && _a !== void 0 ? _a : 0)) * STACK_STEP;
-                    if (prop.height > target) {
-                        prop.height = Math.max(target, prop.height - dt * 3.5);
-                        prop.model.setPosition(prop.x, prop.height, prop.z);
-                    }
-                    if (prop.height > 0)
-                        continue;
-                }
-                const distance = Math.hypot(prop.x - this.x, prop.z - this.z);
-                if (prop.tier > this.tier) {
-                    if (distance < this.radius * 0.79 + data.footprint * 0.43 && this.bumpCooldown <= 0) {
-                        this.bumpCooldown = 1.4;
-                        this.play('too-big');
-                        this.say(`Hố cần cấp ${prop.tier + 1} để nuốt ${data.label}.`);
-                    }
-                    continue;
-                }
-                if (distance > this.radius - data.footprint * 0.48)
-                    continue;
-                prop.age = 0;
-                if (prop.shadow)
-                    prop.shadow.active = false;
-            }
-            prop.age += dt;
-            const t = Math.min(1, prop.age / (prop.stack ? 0.2 : SWALLOW_TIME));
-            const scale = Math.max(0.025, 1 - t * t);
-            prop.model.setScale(scale, scale, scale);
-            prop.model.setRotationFromEuler(t * 55, prop.angle + t * 108, -t * 13);
-            prop.model.setPosition(prop.x + (this.x - prop.x) * t, -0.76 * t * t, prop.z + (this.z - prop.z) * t);
-            if (t < 1)
-                continue;
-            prop.model.destroy();
-            (_b = prop.shadow) === null || _b === void 0 ? void 0 : _b.destroy();
-            if (prop.stack)
-                this.columnBase[prop.stack.column] = prop.stack.level + 1;
-            this.props.splice(index, 1);
-            this.eaten++;
-            this.mass += data.mass;
-            if (prop.tier > 1)
-                gulp = 'gulp-heavy';
-            else
-                gulp !== null && gulp !== void 0 ? gulp : (gulp = 'gulp-soft');
-        }
-        if (!gulp)
-            return;
-        this.pulse = 1;
-        if (gulp === 'gulp-heavy' || this.time - this.lastGulp >= 0.12) {
-            this.play(gulp);
-            this.lastGulp = this.time;
-        }
-        const next = tierFor(this.mass);
-        if (next > this.tier) {
-            this.tier = next;
-            this.play('grow');
-            this.say(`Cấp ${next + 1}! Giờ nuốt được ${PROPS[next].label}.`, 3);
-        }
-        this.updateStatus();
-        if (this.eaten === this.layout.length) {
-            this.finished = true;
-            this.play('complete');
-            this.district.message('Đã nuốt hết vật thể trong khu phố.');
-            this.district.showFinish(true);
-        }
+    renderRound(blend) {
+        const { x, z, radius } = this.round.state;
+        this.district.pose(x, z, radius, this.time, this.pulse);
+        this.district.follow(x, z, radius, blend);
     }
     updateStatus() {
-        this.district.updateStatus(this.mass, this.tier, this.eaten, this.layout.length);
-    }
-    say(text, seconds = 1.8) {
-        this.notice = seconds;
-        this.district.message(text);
+        const { mass, tier, eaten } = this.round.state;
+        this.district.updateStatus(mass, tier, eaten, this.round.total);
     }
     unlockAudio() {
         if (this.interacted)
