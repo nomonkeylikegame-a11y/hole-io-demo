@@ -82,7 +82,7 @@ let PocketDistrict = class PocketDistrict extends Component {
         this.district.dispose();
     }
     update(dt) {
-        const resized = this.district.resize();
+        this.district.resize();
         if (!this.ready)
             return;
         const step = Math.min(dt, 0.05);
@@ -115,7 +115,7 @@ let PocketDistrict = class PocketDistrict extends Component {
                 this.district.showFinish(true);
             }
         }
-        if (resized || frame.swallowed.length)
+        if (frame.swallowed.length)
             this.updateStatus();
         this.pulse = Math.max(0, this.pulse - step * 2.7);
         this.renderRound(1 - Math.exp(-step * 4.7));
@@ -198,8 +198,8 @@ let PocketDistrict = class PocketDistrict extends Component {
         this.district.follow(x, z, radius, blend, this.time);
     }
     updateStatus() {
-        const { mass, tier, eaten } = this.round.state;
-        this.district.updateStatus(mass, tier, eaten, this.round.total);
+        const { tier, eaten } = this.round.state;
+        this.district.updateStatus(tier, eaten, this.round.total);
     }
     unlockAudio() {
         if (this.interacted)

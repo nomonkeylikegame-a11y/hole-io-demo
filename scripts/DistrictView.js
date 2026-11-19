@@ -1,17 +1,21 @@
 import { Camera, Canvas, Color, Graphics, HorizontalTextAlignment, Label, Layers, Material, MeshRenderer, Node, primitives, UITransform, utils, Vec3, view, } from 'cc';
-import { BOARD_HALF, CAMERA_YAW, PROPS, TIER_MASS, TIER_RADIUS } from './DistrictRules.js';
-const COL = {
-    ink: '#172937', panel: '#223846', cream: '#fff6dc', muted: '#c0d1c4',
-    mint: '#a6e0ab',
-};
+import { BOARD_HALF, CAMERA_YAW, PROPS, TIER_RADIUS } from './DistrictRules.js';
+const COL = { ink: '#172937', cream: '#fff6dc' };
 const tint = (value) => Color.fromHEX(new Color(), value);
+const countFormat = new Intl.NumberFormat('vi-VN');
 const HOLE_SIDES = 64;
 const HOLE_OPENING = 0.95;
 const GROUND_RAYS = HOLE_SIDES + 4;
+const SECTOR_SIZE = 6;
+const CAMERA_ZOOM = 0.70;
+const CAMERA_RIGHT_X = Math.cos(CAMERA_YAW);
+const CAMERA_DEPTH_X = Math.sin(CAMERA_YAW);
 export class DistrictView {
     constructor(parent, onAudio, onRestart) {
         this.targets = new Map();
         this.props = new Map();
+        this.sectors = new Map();
+        this.spareBlocks = new Map();
         this.materials = [];
         this.models = [];
         this.meshes = [];
@@ -34,7 +38,6 @@ export class DistrictView {
             maxPos: { x: BOARD_HALF, y: 0, z: BOARD_HALF },
         };
         this.groundPose = new Vec3(Infinity, Infinity, Infinity);
-        this.statsWidth = 282;
         this.width = 0;
         this.height = 0;
         this.world = this.child(parent, 'Khu phố');
@@ -93,18 +96,20 @@ export class DistrictView {
         hudCamera.far = 2000;
         this.canvas.addComponent(Canvas).cameraComponent = hudCamera;
         this.left = this.child(this.canvas, 'Thông tin', true);
-        this.title = this.label(this.left, 'Pocket District', 34, COL.cream, true);
-        this.objective = this.label(this.left, 'Đang dựng khu phố…', 16, COL.muted);
-        this.status = this.label(this.left, 'CẤP 01', 15, COL.mint, true);
-        this.progress = this.child(this.left, 'Thanh tiến độ', true).addComponent(Graphics);
+        const blockIcon = this.child(this.left, 'Khối đã nuốt', true);
+        blockIcon.setPosition(10, 0);
+        this.drawIcon(blockIcon.addComponent(Graphics), 'block');
+        this.objective = this.label(this.left, 'Đang dựng khu phố…', 24, true);
+        this.objective.node.setPosition(28, 0);
+        this.status = this.label(this.left, 'Cấp 1', 15);
+        this.status.node.setPosition(28, -26);
         this.controls = this.child(this.canvas, 'Điều khiển', true);
-        this.audio = this.button(this.controls, 'Có tiếng', 105, onAudio);
-        this.replay = this.button(this.controls, 'Chơi lại', 91, onRestart);
+        this.audio = this.iconButton(this.controls, 'Âm thanh', 'audio', onAudio);
+        this.audio.setPosition(-66, 0);
+        this.iconButton(this.controls, 'Chơi lại', 'replay', onRestart).setPosition(-22, 0);
         this.finish = this.child(this.canvas, 'Hoàn thành', true);
-        this.label(this.finish, 'Đã dọn xong!', 32, COL.cream, true, true).node.setPosition(0, 43);
-        this.label(this.finish, 'Đã nuốt hết vật thể.', 15, COL.muted, false, true)
-            .node.setPosition(0, 7);
-        this.button(this.finish, 'Chơi lại', 126, onRestart).node.parent.setPosition(0, -42);
+        this.label(this.finish, 'Đã dọn xong!', 32, true, true).node.setPosition(0, 24);
+        this.iconButton(this.finish, 'Chơi lại', 'replay', onRestart).setPosition(0, -22);
         this.finish.active = false;
         this.resize();
     }
@@ -134,18 +139,46 @@ export class DistrictView {
             round: this.material('#76d8dd', art.atlas, true),
             pyramid: this.material('#ffad83', art.atlas, true),
             square: this.material('#c5a9ec', art.atlas, true),
+            ring: this.material('#f694a4', art.atlas, true),
+            cross: this.material('#a6d683', art.atlas, true),
+            steps: this.material('#82aef5', art.atlas, true),
         };
         for (const prop of PROPS)
             this.models.push(this.mesh(art.props[prop.name]));
     }
     resetProps(props) {
         for (const prop of this.props.keys())
-            this.removeProp(prop);
-        for (const prop of props)
-            this.props.set(prop, this.createProp(prop));
+            this.releaseProp(prop);
+        this.sectors.clear();
+        for (const prop of props) {
+            if (!prop.stack) {
+                this.props.set(prop, this.createProp(prop));
+                continue;
+            }
+            const col = Math.floor((prop.x + BOARD_HALF) / SECTOR_SIZE);
+            const row = Math.floor((prop.z + BOARD_HALF) / SECTOR_SIZE);
+            const key = this.sectorKey(col, row);
+            let sector = this.sectors.get(key);
+            if (!sector) {
+                sector = {
+                    x: (col + 0.5) * SECTOR_SIZE - BOARD_HALF,
+                    z: (row + 0.5) * SECTOR_SIZE - BOARD_HALF,
+                    blocks: new Set(), visible: false,
+                };
+                this.sectors.set(key, sector);
+            }
+            sector.blocks.add(prop);
+        }
     }
     renderProp(prop, holeX, holeZ) {
-        const { model, shadow } = this.props.get(prop);
+        let visual = this.props.get(prop);
+        if (!visual && prop.entry) {
+            visual = this.createProp(prop);
+            this.props.set(prop, visual);
+        }
+        if (!visual)
+            return;
+        const { model, shadow } = visual;
         const { x, z, height, entry, angle } = prop;
         if (!entry) {
             model.setPosition(x, height, z);
@@ -164,13 +197,44 @@ export class DistrictView {
         model.setPosition(holeX + entry.x * inward, height, holeZ + entry.z * inward);
     }
     removeProp(prop) {
-        const { model, shadow } = this.props.get(prop);
-        model.destroy();
-        shadow === null || shadow === void 0 ? void 0 : shadow.destroy();
+        var _a;
+        if (prop.stack) {
+            const col = Math.floor((prop.x + BOARD_HALF) / SECTOR_SIZE);
+            const row = Math.floor((prop.z + BOARD_HALF) / SECTOR_SIZE);
+            (_a = this.sectors.get(this.sectorKey(col, row))) === null || _a === void 0 ? void 0 : _a.blocks.delete(prop);
+        }
+        this.releaseProp(prop);
+    }
+    releaseProp(prop) {
+        var _a;
+        const visual = this.props.get(prop);
+        if (!visual)
+            return;
+        const { model, shadow } = visual;
+        if (prop.stack) {
+            const { pattern } = prop.stack;
+            model.active = false;
+            const pool = (_a = this.spareBlocks.get(pattern)) !== null && _a !== void 0 ? _a : [];
+            pool.push(model);
+            this.spareBlocks.set(pattern, pool);
+        }
+        else {
+            model.destroy();
+            shadow === null || shadow === void 0 ? void 0 : shadow.destroy();
+        }
         this.props.delete(prop);
     }
     createProp(prop) {
+        var _a;
         const { tier, x, z, angle, height, stack } = prop;
+        const cached = stack && ((_a = this.spareBlocks.get(stack.pattern)) === null || _a === void 0 ? void 0 : _a.pop());
+        if (cached) {
+            cached.setPosition(x, height, z);
+            cached.setRotationFromEuler(0, angle, 0);
+            cached.setScale(1, 1, 1);
+            cached.active = true;
+            return { model: cached };
+        }
         const material = stack ? this.stackMaterials[stack.pattern] : this.propMaterial;
         const model = this.addMesh(this.world, PROPS[tier].name, this.models[tier], material, x, height, z);
         model.setRotationFromEuler(0, angle, 0);
@@ -181,6 +245,35 @@ export class DistrictView {
         shadow.setScale(size * 1.15, 1, size * 0.83);
         shadow.setRotationFromEuler(0, angle, 0);
         return { model, shadow };
+    }
+    sectorKey(col, row) {
+        return row * Math.ceil(BOARD_HALF * 2 / SECTOR_SIZE) + col;
+    }
+    showCameraSectors(aspect) {
+        // Include the sector's corners and the visible tops of the tallest towers.
+        const sectorMargin = (CAMERA_RIGHT_X + CAMERA_DEPTH_X) * SECTOR_SIZE * 0.5;
+        const side = this.camera.orthoHeight * aspect + sectorMargin + 1.5;
+        const depth = this.camera.orthoHeight * 1.22 + sectorMargin + 1;
+        for (const sector of this.sectors.values()) {
+            const x = sector.x - this.focus.x;
+            const z = sector.z - this.focus.z;
+            const slack = sector.visible ? 1 : 0;
+            const along = x * CAMERA_DEPTH_X + z * CAMERA_RIGHT_X;
+            const visible = Math.abs(x * CAMERA_RIGHT_X - z * CAMERA_DEPTH_X) <= side + slack &&
+                along >= -depth - slack && along <= depth + slack + 4;
+            if (visible === sector.visible)
+                continue;
+            sector.visible = visible;
+            for (const block of sector.blocks) {
+                if (visible) {
+                    if (!this.props.has(block))
+                        this.props.set(block, this.createProp(block));
+                }
+                else if (!block.entry) {
+                    this.releaseProp(block);
+                }
+            }
+        }
     }
     resetFeedback() {
         this.sparkCursor = 0;
@@ -283,18 +376,19 @@ export class DistrictView {
         const intro = Math.max(0, 1 - time / 0.94) ** 3;
         const growth = (time - this.growAt) / 0.68;
         const recoil = growth < 1 ? Math.sin(growth * Math.PI) * (1 - growth) * 1.1 : 0;
-        const targetZoom = (portrait ? 8.25 : 7.2) + radius * 2.15 + intro * 2.6 + recoil;
+        const targetZoom = ((portrait ? 8.25 : 7.2) + radius * 2.15 + intro * 2.6 + recoil) * CAMERA_ZOOM;
         this.camera.orthoHeight += (targetZoom - this.camera.orthoHeight) * blend;
         const impact = time - this.impactAt;
         const shake = Math.max(0, 1 - impact / 0.28) ** 2;
         const distance = 24 + 2.4 * intro;
         this.camera.node.setPosition(this.focus.x + Math.sin(CAMERA_YAW) * distance + Math.sin(impact * 69) * shake * 0.15, 36 + 3.6 * intro, this.focus.z + Math.cos(CAMERA_YAW) * distance + Math.cos(impact * 79) * shake * 0.12);
         this.camera.node.lookAt(this.focus);
+        this.showCameraSectors(size.width / size.height);
     }
     resize() {
         const { width, height } = view.getVisibleSize();
         if (width === this.width && height === this.height)
-            return false;
+            return;
         this.width = width;
         this.height = height;
         this.canvas.setPosition(width / 2, height / 2);
@@ -302,42 +396,21 @@ export class DistrictView {
         const camera = this.canvas.getComponent(Canvas).cameraComponent;
         camera.orthoHeight = height / 2;
         camera.node.setPosition(0, 0, 1000);
-        const compact = width < 635;
-        const margin = compact ? 12 : 26;
+        const margin = width < 635 ? 12 : 24;
         const leftEdge = -width / 2 + margin;
         const topEdge = height / 2 - margin;
-        this.statsWidth = compact ? Math.min(292, width - 2 * margin) : 304;
-        this.left.setPosition(leftEdge + this.statsWidth / 2, topEdge - 65);
-        this.panel(this.left, this.statsWidth, 130, COL.ink);
-        const start = -this.statsWidth / 2 + 18;
-        this.title.node.setPosition(start, 37);
-        this.objective.node.setPosition(start, 4);
-        this.status.node.setPosition(start, -24);
-        this.progress.node.setPosition(start, -46);
-        this.controls.setPosition(width / 2 - margin, topEdge - (compact ? 160 : 24));
-        this.audio.node.parent.setPosition(-154, 0);
-        this.replay.node.parent.setPosition(-45.5, 0);
-        this.panel(this.finish, Math.min(320, width - 2 * margin), 170, COL.ink);
-        return true;
+        this.left.setPosition(leftEdge, topEdge - 18);
+        this.controls.setPosition(width / 2 - margin, topEdge - 18);
     }
-    updateStatus(mass, tier, eaten, total) {
-        this.objective.string = `${eaten} / ${total} vật đã nuốt`;
-        const nextTier = TIER_MASS[tier + 1];
-        this.status.string = nextTier
-            ? `CẤP 0${tier + 1}     ·     ${mass}/${nextTier} KHỐI LƯỢNG`
-            : `CẤP 0${tier + 1}     ·     KÍCH THƯỚC TỐI ĐA`;
-        const width = this.statsWidth - 36;
-        const progress = nextTier ? (mass - TIER_MASS[tier]) / (nextTier - TIER_MASS[tier]) : 1;
-        this.progress.clear();
-        this.fill(this.progress, 0, 0, width, 6, 3, COL.panel);
-        if (progress > 0)
-            this.fill(this.progress, 0, 0, Math.max(6, width * progress), 6, 3, COL.mint);
+    updateStatus(tier, eaten, total) {
+        this.objective.string = `${countFormat.format(eaten)} / ${countFormat.format(total)}`;
+        this.status.string = `Cấp ${tier + 1}`;
     }
     showLoadError() {
         this.objective.string = 'Không tải được khu phố.';
     }
     setMuted(muted) {
-        this.audio.string = muted ? 'Tắt tiếng' : 'Có tiếng';
+        this.drawIcon(this.audio.getComponent(Graphics), muted ? 'muted' : 'audio');
     }
     showFinish(visible) {
         this.finish.active = visible;
@@ -444,7 +517,7 @@ export class DistrictView {
         }
         return indices;
     }
-    label(parent, text, size, color, bold = false, center = false) {
+    label(parent, text, size, bold = false, center = false) {
         const node = this.child(parent, text || 'Nhãn', true);
         const label = node.addComponent(Label);
         node.getComponent(UITransform).setAnchorPoint(center ? 0.5 : 0, 0.5);
@@ -454,33 +527,72 @@ export class DistrictView {
         label.lineHeight = size + 4;
         label.enableWrapText = false;
         label.isBold = bold;
-        label.color = tint(color);
+        label.color = tint(COL.ink);
+        label.enableOutline = true;
+        label.outlineColor = tint(COL.cream);
+        label.outlineWidth = 2;
         label.string = text;
         return label;
     }
-    panel(parent, width, height, color) {
-        // Draw the background before the text children so the HUD batches in reading order.
-        let bg = parent.getChildByName('Nền');
-        if (!bg) {
-            bg = this.child(parent, 'Nền', true);
-            bg.addComponent(Graphics);
-            bg.setSiblingIndex(0);
-        }
-        const shape = bg.getComponent(Graphics);
-        shape.clear();
-        this.fill(shape, -width / 2, -height / 2, width, height, 13, color);
-    }
-    fill(shape, x, y, width, height, radius, color) {
-        shape.fillColor = tint(color);
-        shape.roundRect(x, y, width, height, radius);
-        shape.fill();
-    }
-    button(parent, text, width, action) {
-        const hit = this.child(parent, text, true);
-        hit.addComponent(UITransform).setContentSize(width, 46);
-        this.panel(hit, width, 46, COL.ink);
+    iconButton(parent, name, icon, action) {
+        const hit = this.child(parent, name, true);
+        hit.addComponent(UITransform).setContentSize(44, 44);
+        this.drawIcon(hit.addComponent(Graphics), icon);
         hit.on(Node.EventType.TOUCH_END, action);
-        this.targets.set(hit, { width, height: 46 });
-        return this.label(hit, text, 16, COL.cream, true, true);
+        this.targets.set(hit, { width: 44, height: 44 });
+        return hit;
+    }
+    drawIcon(shape, icon) {
+        shape.clear();
+        shape.lineCap = Graphics.LineCap.ROUND;
+        shape.lineJoin = Graphics.LineJoin.ROUND;
+        for (const { color, width } of [{ color: COL.cream, width: 5 }, { color: COL.ink, width: 2 }]) {
+            shape.strokeColor = tint(color);
+            shape.lineWidth = width;
+            if (icon === 'block') {
+                shape.moveTo(-7, 5);
+                shape.lineTo(0, 9);
+                shape.lineTo(7, 5);
+                shape.lineTo(7, -4);
+                shape.lineTo(0, -8);
+                shape.lineTo(-7, -4);
+                shape.close();
+                shape.moveTo(-7, 5);
+                shape.lineTo(0, 1);
+                shape.lineTo(7, 5);
+                shape.moveTo(0, 1);
+                shape.lineTo(0, -8);
+            }
+            else if (icon === 'replay') {
+                shape.moveTo(8, 3);
+                shape.bezierCurveTo(4, 11, -10, 9, -9, -1);
+                shape.bezierCurveTo(-8, -10, 6, -10, 9, -2);
+                shape.moveTo(8, 9);
+                shape.lineTo(8, 3);
+                shape.lineTo(2, 3);
+            }
+            else {
+                shape.moveTo(-10, -3);
+                shape.lineTo(-6, -3);
+                shape.lineTo(-1, -7);
+                shape.lineTo(-1, 7);
+                shape.lineTo(-6, 3);
+                shape.lineTo(-10, 3);
+                shape.close();
+                if (icon === 'muted') {
+                    shape.moveTo(4, 4);
+                    shape.lineTo(10, -4);
+                    shape.moveTo(4, -4);
+                    shape.lineTo(10, 4);
+                }
+                else {
+                    shape.moveTo(3, 4);
+                    shape.quadraticCurveTo(9, 0, 3, -4);
+                    shape.moveTo(7, 7);
+                    shape.quadraticCurveTo(15, 0, 7, -7);
+                }
+            }
+            shape.stroke();
+        }
     }
 }
